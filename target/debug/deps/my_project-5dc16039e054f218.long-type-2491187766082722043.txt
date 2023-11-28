@@ -1,0 +1,1 @@
+chumsky::combinator::Map<IgnoreThen<Just<&str, _, _>, impl chumsky::Parser<'_, _, &<_ as chumsky::text::Char>::Str, _> + Copy + Clone, &str, _>, &_, fn(String) -> Arg {Arg::Env}>

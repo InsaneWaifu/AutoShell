@@ -1,0 +1,25 @@
+[package]
+name = "yash-syntax"
+version = "0.7.0"
+authors = ["WATANABE Yuki <magicant@wonderwand.net>"]
+edition = "2021"
+rust-version = "1.70.0"
+description = "POSIX-compatible shell script syntax parser"
+# documentation = "https://yash.osdn.jp/doc/"
+readme = "README.md"
+# homepage = "https://yash.osdn.jp/"
+repository = "https://github.com/magicant/yash-rs"
+license = "GPL-3.0-or-later"
+keywords = ["posix", "shell"]
+categories = ["command-line-utilities", "parser-implementations"]
+
+[dependencies]
+annotate-snippets = { version = "0.9.1", optional = true }
+async-trait = "0.1.73"
+futures-util = "0.3.28"
+itertools = "0.11.0"
+thiserror = "1.0.47"
+
+[dev-dependencies]
+assert_matches = "1.5.0"
+futures-executor = "0.3.28"
