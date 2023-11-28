@@ -1,1 +1,0 @@
-chumsky::combinator::Map<DelimitedBy<chumsky::combinator::Map<ToSlice<Repeated<Or<Ignored<NoneOf<&str, _, _>, _>, Boxed<'_, '_, _, (), _>>, (), _, _>, ()>, &_, for<'a> fn(&'a _) -> String {<_ as ToString>::to_string}>, Just<char, _, _>, Just<char, _, _>, char, char>, String, fn(&str) -> Arg<'_> {Arg::<'_>::Str}>

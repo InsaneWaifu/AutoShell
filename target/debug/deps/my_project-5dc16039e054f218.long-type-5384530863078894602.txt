@@ -1,1 +1,0 @@
-chumsky::combinator::Map<Boxed<'_, '_, _, (), _>, (), fn(&str) -> Arg<'_> {Arg::<'_>::Str}>

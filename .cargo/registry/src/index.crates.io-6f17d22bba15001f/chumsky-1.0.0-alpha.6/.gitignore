@@ -1,7 +1,0 @@
-# IDE projects
-.idea/
-
-# Project output
-/target
-flamegraph.svg
-perf.data*

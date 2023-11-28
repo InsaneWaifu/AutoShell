@@ -1,1 +1,0 @@
-chumsky::combinator::Map<impl chumsky::Parser<'_, _, &<_ as chumsky::text::Char>::Str, _> + Copy + Clone, &_, fn(String) -> Arg {Arg::Str}>
