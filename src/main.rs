@@ -1,20 +1,17 @@
-use std::num::NonZeroU64;
-use yash_syntax::{parser::lex::Lexer, alias::AliasSet, parser::Parser, source::Source};
-mod cmd;
+#![feature(try_blocks)]
+use autoshell::{parse, Error};
+
 fn main() {
-    let cmd = "echo \"Hello World $PATH $(ls -la)\" > file.txt";
-    let mem = yash_syntax::input::Memory::new(cmd);
-  let input = Box::new(mem);
-  // Next, create a lexer.
-  let line = NonZeroU64::new(1).unwrap();
-  let mut lexer = Lexer::new(input, line, Source::Unknown);
+    let st = "ls -la | grep txt > $(echo OUTFILE) | echo $?";
+    let opt: Result<(), Error> = try {
+        let spl = autoshell::split(st)?;
 
-  // Then, create a new parser borrowing the lexer.
-  let aliases = AliasSet::new();
-  let mut parser = Parser::new(&mut lexer, &aliases);
+        let mut iter = spl.iter().peekable();
 
-  // Lastly, call the parser's function to get an AST.
-  use futures_executor::block_on;
-  let list = block_on(parser.command_line()).unwrap().unwrap();
-  dbg!(list);
+        let parsed = parse(&mut iter)?;
+        dbg!(parsed);
+    };
+    if let Err(e) = opt {
+        println!("{}", e.display(st));
+    }
 }
