@@ -1,7 +1,7 @@
 #![feature(macro_metavar_expr)]
 #![feature(type_alias_impl_trait)]
 #![feature(anonymous_lifetime_in_impl_trait)]
-#![no_std]
+//#![no_std]
 extern crate alloc;
 
 use core::ops::Range;
@@ -107,6 +107,7 @@ pub enum OpenOrClose {
 #[derive(Debug)]
 pub enum CommandBit {
     Str(String, Loc),
+    Quotes(Vec<CommandBit>, Loc),
     Pipe(Loc),
     Redir(RedirType, Loc),
     Dollar(Loc),
@@ -115,7 +116,10 @@ pub enum CommandBit {
 
 impl CommandBit {
     const fn is_op(&self) -> bool {
-        !matches!(self, Self::Str(..) | Self::Dollar(..) | Self::Control(..))
+        !matches!(
+            self,
+            Self::Str(..) | Self::Dollar(..) | Self::Control(..) | Self::Quotes(..)
+        )
     }
 
     const fn precedence(&self) -> OperatorPrecedence {
@@ -123,7 +127,7 @@ impl CommandBit {
             Self::Pipe(..) => OperatorPrecedence::Pipe,
             Self::Str(..) => OperatorPrecedence::Command,
             Self::Redir(..) => OperatorPrecedence::Redirect,
-            Self::Dollar(..) | Self::Control(..) => unreachable!(),
+            Self::Dollar(..) | Self::Control(..) | Self::Quotes(..) => unreachable!(),
         }
     }
 
@@ -160,6 +164,7 @@ impl From<(String, Loc)> for CommandBit {
 pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
     let mut chars = t.chars().peekable();
     let mut cbs = vec![];
+    let mut innercbs = vec![];
     let mut stri = String::new();
     let mut startloc = 0;
     let mut endloc = 0;
@@ -171,8 +176,12 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
                 if (startloc != endloc) {
                     let ostri = stri;
                     stri = String::new();
-                    if !ostri.trim().is_empty() {
-                        cbs.push(CommandBit::Str(ostri, startloc..endloc));
+                    if quote_stack.is_none() {
+                        if !ostri.trim().is_empty() {
+                            cbs.push(CommandBit::Str(ostri, startloc..endloc));
+                        }
+                    } else {
+                        innercbs.push(CommandBit::Str(ostri, startloc..endloc));
                     }
                     startloc = endloc;
                 }
@@ -244,15 +253,17 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
                     if *quote_stack.as_ref().unwrap() != x {
                         stri.push(x);
                     } else {
-                        quote_stack = None;
                         build_str!();
+                        quote_stack = None;
+                      cbs.append(&mut innercbs);
+                      innercbs.clear();
                     }
                 } else {
                     build_str!();
                     quote_stack = Some(x);
                 }
             },
-            x if x.is_whitespace(), => {
+            x if x.is_whitespace()&& quote_stack.is_none(), => {
                 build_str!();
             },
             x => stri.push(x)
@@ -260,6 +271,9 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
         endloc += 1;
     }
     build_str!();
+    if !innercbs.is_empty() {
+        panic!()
+    }
     Ok(cbs)
 }
 
@@ -376,7 +390,8 @@ fn parse_atom<'a>(
         if max != 0 && children.len() >= max as usize {
             break;
         }
-        match tok {
+
+        match dbg!(tok) {
             CommandBit::Str(s, loc) => children.push(AstNode::Cmd(s, loc.clone())),
             CommandBit::Dollar(loc) => {
                 let t = stream
@@ -394,6 +409,10 @@ fn parse_atom<'a>(
                     if ctx == Ctx::None {
                         return Err(Error::new("Unexpected close".into(), loc.clone()));
                     } else if ctx == Ctx::Substitution {
+                      if children.len() == 0 {
+                        let range = loc.clone();
+                        return Err(Error::new("Expected a command".into(), range))
+                      }
                         let range = children.first().unwrap().get_loc().start
                             ..children.last().unwrap().get_loc().end;
                         return Err(Error {
@@ -404,6 +423,7 @@ fn parse_atom<'a>(
                 }
                 OpenOrClose::OpenExpand => {
                     let mut lhs = parse_atom(stream, 0, Ctx::Substitution);
+                  dbg!(stream.peek());
                     if let Ok(x) = lhs {
                         lhs = parse_1(x, OperatorPrecedence::Redirect, stream, Ctx::Substitution);
                     }
@@ -419,17 +439,20 @@ fn parse_atom<'a>(
                                     let range = loc.start..x.get_loc().end;
                                     children.push(AstNode::Expansion(Box::new(x), range))
                                 }
-                                _ => unreachable!(),
+                                _ => panic!(),
                             }
                         }
                     }
                 }
             },
-            _ => unreachable!(),
+            _ => panic!(),
         }
     }
     if children.is_empty() {
         return Err("Expected a command".into());
+    }
+    if ctx==Ctx::Substitution {
+      return Err("Unmatched substitution brackets".into())
     }
     let range = children.first().unwrap().get_loc().start..children.last().unwrap().get_loc().end;
 

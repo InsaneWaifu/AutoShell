@@ -2,9 +2,9 @@
 use autoshell::{parse, Error};
 
 fn main() {
-    let st = "ls -la | grep txt > $(echo OUTFILE) | echo $?";
+    let st = "ls -la | grep txt > \"$(echo OUTFILE).txt\" | echo $?";
     let opt: Result<(), Error> = try {
-        let spl = autoshell::split(st)?;
+        let spl = dbg!(autoshell::split(st)?);
 
         let mut iter = spl.iter().peekable();
 
