@@ -1,6 +1,7 @@
 #![feature(macro_metavar_expr)]
 #![feature(type_alias_impl_trait)]
 #![feature(anonymous_lifetime_in_impl_trait)]
+#![feature(never_type)]
 //#![no_std]
 extern crate alloc;
 
@@ -169,6 +170,9 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
     let mut startloc = 0;
     let mut endloc = 0;
     let mut quote_stack: Option<char> = None;
+    let mut control_stack: u32 = 0;
+    let mut strstart: usize = 0;
+    let mut topush = &mut cbs;
     macro_rules! build_str {
         () => {
             #[allow(unused_assignments)]
@@ -178,10 +182,10 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
                     stri = String::new();
                     if quote_stack.is_none() {
                         if !ostri.trim().is_empty() {
-                            cbs.push(CommandBit::Str(ostri, startloc..endloc));
+                            topush.push(CommandBit::Str(ostri, startloc..endloc));
                         }
                     } else {
-                        innercbs.push(CommandBit::Str(ostri, startloc..endloc));
+                        topush.push(CommandBit::Str(ostri, startloc..endloc));
                     }
                     startloc = endloc;
                 }
@@ -215,22 +219,28 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
                 if chars.next_if(|x| *x == '(').is_some() {
                     build_str!();
                     endloc += 1;
-                    cbs.push(CommandBit::Control(
+                    topush.push(CommandBit::Control(
                         OpenOrClose::OpenExpand,
                         startloc..endloc,
-                    ))
+                    ));
+                    if quote_stack.is_some() {
+                        control_stack+=1;
+                    }
                 } else {
                     build_str!();
-                    cbs.push(CommandBit::Dollar(startloc..endloc))
+                    topush.push(CommandBit::Dollar(startloc..endloc))
                 }
             },
             '|', spec => {
                 build_str!();
-                cbs.push(CommandBit::Pipe(startloc..endloc));
+                topush.push(CommandBit::Pipe(startloc..endloc));
             },
-            ')', => {
+            ')' if (quote_stack.is_none()) || (control_stack > 0), => {
+                if quote_stack.is_some() {
+                    control_stack-=1;
+                }
                 build_str!();
-                cbs.push(CommandBit::Control(OpenOrClose::Close, startloc..endloc))
+                topush.push(CommandBit::Control(OpenOrClose::Close, startloc..endloc))
             },
             '\\' => {
                 let next = chars.next().ok_or(Error::new("Expected char".into(), endloc..))?;
@@ -242,11 +252,11 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
             '2' if chars.next_if(|x| *x == '>').is_some() && quote_stack.is_none(), => {
                 build_str!();
                 endloc += 1;
-                cbs.push(CommandBit::Redir(RedirType::Stderr, startloc..endloc))
+                topush.push(CommandBit::Redir(RedirType::Stderr, startloc..endloc))
             },
             '>', spec => {
                 build_str!();
-                cbs.push(CommandBit::Redir(RedirType::Stdout, startloc..endloc))
+                topush.push(CommandBit::Redir(RedirType::Stdout, startloc..endloc))
             },
             x @ ('"' | '\'') => {
                 if quote_stack.is_some() {
@@ -255,12 +265,16 @@ pub fn split(t: &str) -> Result<Vec<CommandBit>, Error> {
                     } else {
                         build_str!();
                         quote_stack = None;
-                      cbs.append(&mut innercbs);
-                      innercbs.clear();
+                        topush = &mut cbs;
+                        topush.push(CommandBit::Quotes(innercbs, strstart..endloc));
+                        innercbs = vec![];
                     }
                 } else {
                     build_str!();
+                    topush = &mut innercbs;
+                    startloc = endloc+1;
                     quote_stack = Some(x);
+                    strstart = startloc;
                 }
             },
             x if x.is_whitespace()&& quote_stack.is_none(), => {
@@ -391,70 +405,90 @@ fn parse_atom<'a>(
             break;
         }
 
-        match dbg!(tok) {
-            CommandBit::Str(s, loc) => children.push(AstNode::Cmd(s, loc.clone())),
-            CommandBit::Dollar(loc) => {
-                let t = stream
-                    .next_if(|x| matches!(x, CommandBit::Str(..)))
-                    .ok_or(Error::new("Need an ident".into(), loc.end..))?;
-                let (s, l) = match t {
-                    CommandBit::Str(s, l) => (s, l),
-                    _ => unreachable!(),
-                };
-
-                children.push(AstNode::Variable(s, loc.start..l.end))
-            }
-            CommandBit::Control(oe, loc) => match oe {
-                OpenOrClose::Close => {
-                    if ctx == Ctx::None {
-                        return Err(Error::new("Unexpected close".into(), loc.clone()));
-                    } else if ctx == Ctx::Substitution {
-                      if children.len() == 0 {
-                        let range = loc.clone();
-                        return Err(Error::new("Expected a command".into(), range))
-                      }
-                        let range = children.first().unwrap().get_loc().start
-                            ..children.last().unwrap().get_loc().end;
-                        return Err(Error {
-                            message: ErrorType::Escape(AstNode::JustCmd(children, range)),
-                            range: (0..0).into(),
-                        });
-                    }
-                }
-                OpenOrClose::OpenExpand => {
-                    let mut lhs = parse_atom(stream, 0, Ctx::Substitution);
-                  dbg!(stream.peek());
-                    if let Ok(x) = lhs {
-                        lhs = parse_1(x, OperatorPrecedence::Redirect, stream, Ctx::Substitution);
-                    }
-
-                    match lhs {
-                        Ok(_) => panic!(),
-                        Err(x) => {
-                            if matches!(x.message, ErrorType::Message(..)) {
-                                return Err(x);
-                            }
-                            match x.message {
-                                ErrorType::Escape(x) => {
-                                    let range = loc.start..x.get_loc().end;
-                                    children.push(AstNode::Expansion(Box::new(x), range))
-                                }
-                                _ => panic!(),
-                            }
-                        }
-                    }
-                }
-            },
-            _ => panic!(),
+        if let Some(range) = parseatom_inner(tok, stream, ctx, &mut children)? {
+            println!("return inner");
+            return Err(Error {
+                message: ErrorType::Escape(AstNode::JustCmd(children, range)),
+                range: (0..0).into(),
+            });
         }
     }
     if children.is_empty() {
         return Err("Expected a command".into());
     }
-    if ctx==Ctx::Substitution {
-      return Err("Unmatched substitution brackets".into())
+    if ctx == Ctx::Substitution {
+        return Err("Unmatched substitution brackets".into());
     }
     let range = children.first().unwrap().get_loc().start..children.last().unwrap().get_loc().end;
 
     Ok(AstNode::JustCmd(children, range))
+}
+
+fn parseatom_inner<'a>(
+    tok: &'a CommandBit,
+    stream: &mut Peekable<impl Iterator<Item = &'a CommandBit>>,
+    ctx: Ctx,
+    children: &mut Vec<AstNode<'a>>,
+) -> Result<Option<Loc>, Error<'a>> {
+    match dbg!(tok) {
+        CommandBit::Str(s, loc) => children.push(AstNode::Cmd(s, loc.clone())),
+        CommandBit::Dollar(loc) => {
+            let t = stream
+                .next_if(|x| matches!(x, CommandBit::Str(..)))
+                .ok_or(Error::new("Need an ident".into(), loc.end..))?;
+            let (s, l) = match t {
+                CommandBit::Str(s, l) => (s, l),
+                _ => unreachable!(),
+            };
+
+            children.push(AstNode::Variable(s, loc.start..l.end))
+        }
+        CommandBit::Control(oe, loc) => match oe {
+            OpenOrClose::Close => {
+                if ctx == Ctx::None {
+                    return Err(Error::new("Unexpected close".into(), loc.clone()));
+                } else if ctx == Ctx::Substitution {
+                    if children.is_empty() {
+                        let range = loc.clone();
+                        return Err(Error::new("Expansion without a command".into(), range));
+                    }
+                    let range = children.first().unwrap().get_loc().start
+                        ..children.last().unwrap().get_loc().end;
+                    return Ok(Some(range));
+                }
+            }
+            OpenOrClose::OpenExpand => {
+                let mut lhs = parse_atom(stream, 0, Ctx::Substitution);
+                dbg!(stream.peek());
+                if let Ok(x) = lhs {
+                    lhs = parse_1(x, OperatorPrecedence::Redirect, stream, Ctx::Substitution);
+                }
+
+                match lhs {
+                    Ok(_) => panic!(),
+                    Err(x) => {
+                        if matches!(x.message, ErrorType::Message(..)) {
+                            return Err(x);
+                        }
+                        match x.message {
+                            ErrorType::Escape(x) => {
+                                let range = loc.start..x.get_loc().end;
+                                children.push(AstNode::Expansion(Box::new(x), range))
+                            }
+                            _ => panic!(),
+                        }
+                    }
+                }
+            }
+        },
+        CommandBit::Quotes(cbs, loc) => {
+            let it = &mut cbs.iter().peekable();
+            it.next();
+            if let Some(x) = parseatom_inner(&cbs[0], it, ctx, children)? {
+                return Ok(Some(x));
+            }
+        }
+        _ => panic!(),
+    }
+    Ok(None)
 }
